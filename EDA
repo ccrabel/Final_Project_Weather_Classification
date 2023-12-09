@@ -1,0 +1,417 @@
+EfficientNetB0 for Classifying Weather Images
+This project explores the challenge of classifying images into different types of weather, using the EfficientNetB0 model. The data comes from a Kaggle dataset published at https://www.kaggle.com/datasets/jehanbhathena/weather-dataset/data, and consists of 6862 images with 11 weather labels: dew, fog/smog, frost, glaze, hail, lightning, rain, rainbow, rime, sandstorm, and snow (note: glaze and rime both refer to moisture that has frozen).
+
+Classifying weather conditions from images can be very important from a public safety point of view, and, moreover, most of the weather types for this data set represent weather conditions that could result in dangerous driving conditions. However, this data set represents unique challenges, not only for the number of labels, but because many are quite similar in appearancee, like dew, rime and glaze, or snow and hail; many weather classification tasks are more simplistic categories like sunny v cloudy.
+
+Importing data
+! cp kaggle.json ~/.kaggle/
+! chmod 600 ~/.kaggle/kaggle.json
+!kaggle datasets download -d jehanbhathena/weather-dataset
+weather-dataset.zip: Skipping, found more recently modified local copy (use --force to force download)
+import subprocess
+
+zip_file_path = '/content/weather-dataset.zip'
+extracted_dir = '/content/'
+
+subprocess.run(['unzip', zip_file_path, '-d', extracted_dir],
+               stdout=subprocess.DEVNULL)
+CompletedProcess(args=['unzip', '/content/weather-dataset.zip', '-d', '/content/'], returncode=0)
+# loading libraries
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import cv2
+import random as rn
+from tqdm import tqdm
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import classification_report
+
+from tensorflow import keras
+from keras.models import Sequential
+from keras import layers
+from keras.layers import Dense, Conv2D, Flatten, MaxPool2D
+from keras.applications import EfficientNetB0, EfficientNetB1
+
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
+from tensorflow.keras.models import load_model
+DIR = '../content/dataset'
+labels = os.listdir(DIR)
+print(labels)
+print(f"There are {len(labels)} weather labels.")
+['rime', 'glaze', 'rainbow', 'sandstorm', 'dew', 'lightning', 'fogsmog', 'frost', 'rain', 'hail', 'snow']
+There are 11 weather labels.
+dir_labels = []
+img_dir = []
+label_id = []
+
+for label in labels:
+    path = os.path.join(DIR, label)
+    file_names = os.listdir(path)
+    for file in file_names:
+        temp = os.path.join(path, file)
+        img_dir.append(temp)
+        label_id.append(label)
+    dir_labels.append(path)
+print("The first five file paths from img_dir are:")
+img_dir[0:5]
+The first five file paths from img_dir are:
+['../content/dataset/rime/5260.jpg',
+ '../content/dataset/rime/5889.jpg',
+ '../content/dataset/rime/5987.jpg',
+ '../content/dataset/rime/5980.jpg',
+ '../content/dataset/rime/5764.jpg']
+count = 0
+for img in img_dir:
+  if img.endswith('jpg'):
+    count = count+1
+  else:
+    print(img)
+
+print(f"{count} of the {len(img_dir)} images end in 'jpg'.")
+6862 of the 6862 images end in 'jpg'.
+print("The first five weather labels from label_id are:")
+label_id[0:5]
+The first five weather labels from label_id are:
+['rime', 'rime', 'rime', 'rime', 'rime']
+# Creating a dataframe for the file paths and weather labels
+df = pd.DataFrame({'image': img_dir, 'label': label_id})
+df.head()
+image	label
+0	../content/dataset/rime/5260.jpg	rime
+1	../content/dataset/rime/5889.jpg	rime
+2	../content/dataset/rime/5987.jpg	rime
+3	../content/dataset/rime/5980.jpg	rime
+4	../content/dataset/rime/5764.jpg	rime
+df.info()
+<class 'pandas.core.frame.DataFrame'>
+RangeIndex: 6862 entries, 0 to 6861
+Data columns (total 2 columns):
+ #   Column  Non-Null Count  Dtype 
+---  ------  --------------  ----- 
+ 0   image   6862 non-null   object
+ 1   label   6862 non-null   object
+dtypes: object(2)
+memory usage: 107.3+ KB
+print(df.nunique())
+print(f"There are {df.nunique()[0]} images with {df.nunique()[1]} labels.")
+print(f"There are no missing values, and no duplicate images.")
+image    6862
+label      11
+dtype: int64
+There are 6862 images with 11 labels.
+There are no missing values, and no duplicate images.
+Data
+There are 6862 image files, all formatted as 'jpg', with no missing or duplicate file names. Each image has a single label assigned to it, indicating the type of weather in the image.
+
+Exploratory Data Analysis
+In the EDA, selected images will be plotted to inspect their characteristics, and determine what preprocessing is needed.
+
+# Plotting three randomly selected images with dimension size and weather label
+
+for i in range(3):
+  idx = rn.randint(0, len(img_dir))
+  img = cv2.imread(df['image'].iloc[idx], cv2.IMREAD_COLOR)
+  plt.imshow(img)
+  plt.title(f"Weather label: {df['label'].iloc[idx]}")
+  print(f"The dimensions of the image is {img.shape}:")
+  plt.show()
+  print("\n")
+The dimensions of the image is (240, 400, 3):
+
+
+The dimensions of the image is (240, 440, 3):
+
+
+The dimensions of the image is (188, 269, 3):
+
+
+All three of the randomly selected images have three colors, red-green-blue, as shown by the third dimension, '3'. However, each image is a different size and the images will have to be resized before passing through the EfficientNet models.
+
+# Sample impact of resizing the image to 224 x 224 pixels
+
+img = cv2.imread(df['image'].iloc[1997])
+plt.imshow(img)
+plt.title(f"Weather label: {df['label'].iloc[1997]}")
+print(f"The dimensions of the image is {img.shape}:")
+plt.show()
+print("\n")
+
+img_size = (224, 224)
+resized_img = cv2.resize(img, img_size)
+plt.imshow(resized_img)
+plt.title(f"Weather label: {df['label'].iloc[1997]}")
+print(f"The dimensions of the resized image is {resized_img.shape}:")
+plt.show()
+The dimensions of the image is (317, 595, 3):
+
+
+The dimensions of the resized image is (224, 224, 3):
+
+In order to use the pre-trained image recognition models, the images need to have certain, consistent, image sizes. The most common, and the one for EfficientNetB0, is 224 by 224 pixels. These images have a variety of dimensions. There are two options for unifying the dimensions: cropping and resizing. The advantage of cropping is that it maintains the relative proportions of the features. However, there are two disadvantages: the selection of where to crop in order to include the most salient features, and that some images in this data set have height or widths less than 224. For these models, all images will be resized during the image augmentation process.
+
+# Creating a list of the first image in each label for visualization of the
+# categories.
+
+sample_img = []
+for label in labels:
+  img = df['image'].loc[df['label'] == label].iloc[0]
+  sample_img.append(img)
+
+sample_img
+['../content/dataset/rime/5260.jpg',
+ '../content/dataset/glaze/6486.jpg',
+ '../content/dataset/rainbow/0649.jpg',
+ '../content/dataset/sandstorm/3533.jpg',
+ '../content/dataset/dew/2286.jpg',
+ '../content/dataset/lightning/2149.jpg',
+ '../content/dataset/fogsmog/4293.jpg',
+ '../content/dataset/frost/3863.jpg',
+ '../content/dataset/rain/102.jpg',
+ '../content/dataset/hail/0301.jpg',
+ '../content/dataset/snow/1061.jpg']
+# In a grid, plotting the first image in each label category, resized to
+# 224 x 224 pixels.
+
+ig,ax=plt.subplots(3,4)
+fig.set_size_inches(7, 7)
+
+img = cv2.imread(sample_img[0], cv2.IMREAD_COLOR)
+img = cv2.resize(img, img_size)
+ax[0,0].imshow(img)
+ax[0,0].set_title(f"{labels[0]}")
+img = cv2.imread(sample_img[1], cv2.IMREAD_COLOR)
+img = cv2.resize(img, img_size)
+ax[0,1].imshow(img)
+ax[0,1].set_title(f"{labels[1]}")
+img = cv2.imread(sample_img[2], cv2.IMREAD_COLOR)
+img = cv2.resize(img, img_size)
+ax[0,2].imshow(img)
+ax[0,2].set_title(f"{labels[2]}")
+img = cv2.imread(sample_img[3], cv2.IMREAD_COLOR)
+img = cv2.resize(img, img_size)
+ax[0,3].imshow(img)
+ax[0,3].set_title(f"{labels[3]}")
+
+img = cv2.imread(sample_img[4], cv2.IMREAD_COLOR)
+img = cv2.resize(img, img_size)
+ax[1,0].imshow(img)
+ax[1,0].set_title(f"{labels[4]}")
+img = cv2.imread(sample_img[5], cv2.IMREAD_COLOR)
+img = cv2.resize(img, img_size)
+ax[1,1].imshow(img)
+ax[1,1].set_title(f"{labels[5]}")
+img = cv2.imread(sample_img[6], cv2.IMREAD_COLOR)
+img = cv2.resize(img, img_size)
+ax[1,2].imshow(img)
+ax[1,2].set_title(f"{labels[6]}")
+img = cv2.imread(sample_img[7], cv2.IMREAD_COLOR)
+img = cv2.resize(img, img_size)
+ax[1,3].imshow(img)
+ax[1,3].set_title(f"{labels[7]}")
+
+img = cv2.imread(sample_img[8], cv2.IMREAD_COLOR)
+img = cv2.resize(img, img_size)
+ax[2,0].imshow(img)
+ax[2,0].set_title(f"{labels[8]}")
+img = cv2.imread(sample_img[9], cv2.IMREAD_COLOR)
+img = cv2.resize(img, img_size)
+ax[2,1].imshow(img)
+ax[2,1].set_title(f"{labels[9]}")
+img = cv2.imread(sample_img[10], cv2.IMREAD_COLOR)
+img = cv2.resize(img, img_size)
+ax[2,2].imshow(img)
+ax[2,2].set_title(f"{labels[10]}")
+ax[2,3].set_axis_off()
+
+plt.tight_layout()
+
+# To demonstrate that there are three color channels in each image, the final
+# dimension, RGD images will show each layer for the color dimension of four
+# randomly selected images.
+# The histograms illustrate the different distributions of RGB intensity in
+# each image.
+
+for i in range(4):
+  idx = rn.randint(0, len(img_dir))
+  img = cv2.imread(df['image'].iloc[idx], cv2.IMREAD_COLOR)
+  img = cv2.resize(img, img_size)
+  red = img[:, :, 0]
+  green = img[:, :, 1]
+  blue = img[:, :, 1]
+
+  fig, ax = plt.subplots(1,4, figsize=(8,5))
+  ax[0].imshow(img)
+  ax[1].imshow(red, cmap='gray')
+  ax[2].imshow(green, cmap='gray')
+  ax[3].imshow(blue, cmap='gray')
+  fig.suptitle(f"Weather label: {df['label'].iloc[idx]}")
+
+  title = ['Original', 'Red', 'Green', 'Blue']
+  for col in range(0,4):
+      ax[col].set_title(title[col])
+      ax[col].axis('off')
+  plt.show()
+  print("\n")
+
+  #Show the histograms for each color in the image
+  fig, ax = plt.subplots(3, 1, figsize=(7.5, 4), sharex = True, sharey=True)
+  ax[0].hist(red.ravel(), bins=256, color='red')
+  ax[1].hist(green.ravel(), bins=256, color='green')
+  ax[2].hist(blue.ravel(), bins=256, color='blue')
+  fig.suptitle('Histograms of RGB intensity', fontsize=10)
+
+  plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+# Visualization of the distribution of labels.
+
+plt.figure(figsize=(5,5))
+df['label'].value_counts(normalize = False).plot(kind = 'bar',
+                        color = ['steelblue'])
+plt.ylabel('Number of images')
+plt.title('Number of images for each label')
+plt.show()
+
+Conclusions for EDA: There are 6,862 unique images of 11 weather conditions. The images have three color channels: red, green and blue. There width and height of each image varies, so they will be resized to 224 x 224 during the procress of image augmentation. The most common image label is rime, followed by fogsmog. 'Rime' is not a commonly used term, but it means the the moisture in fog freezes on an object. 'Fogsmog' is a combination of fog and smog. Both of these conditions have considerable practical importance for public safety applications of weather image classification: both rime and fog/smog can create dangerous driving conditions. In fact, most of the weather labels in the data set relate to weather conditions that would be hazardous for driving and/or public safety in general.
+
+Preprocessing for CNN Models
+Since the number of images is relatively small, less than 7,000, image augmentation will be performed with the ImageDataGenerator process. Prior to the data generation, the data will be split between training, test and validation sets.
+
+df_encoded = pd.get_dummies(df, columns=['label'], drop_first=True)
+df_encoded.head()
+image	label_fogsmog	label_frost	label_glaze	label_hail	label_lightning	label_rain	label_rainbow	label_rime	label_sandstorm	label_snow
+0	../content/dataset/rime/5260.jpg	0	0	0	0	0	0	0	1	0	0
+1	../content/dataset/rime/5889.jpg	0	0	0	0	0	0	0	1	0	0
+2	../content/dataset/rime/5987.jpg	0	0	0	0	0	0	0	1	0	0
+3	../content/dataset/rime/5980.jpg	0	0	0	0	0	0	0	1	0	0
+4	../content/dataset/rime/5764.jpg	0	0	0	0	0	0	0	1	0	0
+# Splitting the data into training and test sets.
+X_train, X_test, y_train, y_test = train_test_split(df['image'],
+                                                    df['label'],
+                                                    test_size=0.1,
+                                                    random_state=42)
+print("X_train shape: ", X_train.shape)
+print("X_test shape: ", X_test.shape)
+print("y_train shape: ", y_train.shape)
+print("y_test shape: ", y_test.shape)
+X_train shape:  (6175,)
+X_test shape:  (687,)
+y_train shape:  (6175,)
+y_test shape:  (687,)
+# Splitting the remaining data into training and validation sets, to avoid
+# data leakage in the model fitting.
+
+X_train, X_val, y_train, y_val = train_test_split(X_train, y_train,
+                                                    test_size=0.2,
+                                                    random_state=42)
+print("X_train shape: ", X_train.shape)
+print("X_val shape: ", X_val.shape)
+print("y_train shape: ", y_train.shape)
+print("y_val shape: ", y_val.shape)
+X_train shape:  (4940,)
+X_val shape:  (1235,)
+y_train shape:  (4940,)
+y_val shape:  (1235,)
+# Creating the training, validation and test data frames.
+
+df_train= pd.DataFrame({'image': X_train, 'label': y_train})
+df_val = pd.DataFrame({'image': X_val, 'label': y_val})
+df_test = pd.DataFrame({'image': X_test, 'label': y_test})
+
+print(df_train.shape)
+print(df_val.shape)
+print(df_test.shape)
+(6175, 2)
+(1235, 2)
+(687, 2)
+df_train.columns
+Index(['image', 'label'], dtype='object')
+# Sorting labels into alphabetical order, as it is the default
+# for onehot encoding.
+
+labels_list = labels
+labels_list.sort()
+print(labels_list)
+['dew', 'fogsmog', 'frost', 'glaze', 'hail', 'lightning', 'rain', 'rainbow', 'rime', 'sandstorm', 'snow']
+# Initializing the ImageData Generator for training and validation data
+# Pixel data will be rescaled to a range between 0 and 1, rotation, width/height
+# shifts, zooming and flipping will be include din the data augmentation.
+
+train_datagen=ImageDataGenerator(rescale=1/255,
+                          rotation_range=25,
+                          width_shift_range=0.2,
+                          height_shift_range=0.2,
+                          shear_range=0.2,
+                          zoom_range=0.2,
+                          horizontal_flip=True
+                        )
+
+val_datagen=ImageDataGenerator(rescale=1/255,
+                          rotation_range=25,
+                          width_shift_range=0.2,
+                          height_shift_range=0.2,
+                          shear_range=0.2,
+                          zoom_range=0.2,
+                          horizontal_flip=True
+                        )
+# Creating the generator, accessing the the dataframe to conserve memory.
+# The image size and batch size are preset to (224, 224) and 32, but in future
+# model trainings that can be adapted, for example changing the image size if
+# applying a different EfficientNet model.
+
+img_size = (224, 224)
+batch_size = 32
+train_generator=train_datagen.flow_from_dataframe(df_train,
+                                           x_col="image",
+                                           y_col="label",
+                                           target_size=img_size,
+                                           batch_size=batch_size,
+                                           shuffle=True,
+                                           class_mode='categorical')
+
+val_generator=val_datagen.flow_from_dataframe(df_val,
+                                         x_col="image",
+                                         y_col="label",
+                                         target_size=img_size,
+                                         batch_size=batch_size,
+                                         shuffle=False,
+                                         class_mode='categorical')
+
+test_generator=val_datagen.flow_from_dataframe(df_test,
+                                         x_col="image",
+                                         y_col="label",
+                                         target_size=img_size,
+                                         batch_size=batch_size,
+                                         shuffle=False,
+                                         class_mode='categorical')
+Found 6175 validated image filenames belonging to 11 classes.
+Found 1235 validated image filenames belonging to 11 classes.
+Found 687 validated image filenames belonging to 11 classes.
+# Generate a sample batch (size 32 images), and plotting the first image.
+
+images, labels = next(train_generator)
+print(f"Size of first sample image is {images[0].shape}.")
+print(f"Weather condition label is {labels_list[np.argmax(labels[0])]}.")
+
+# Plot the first sample image
+image = images[0]
+plt.imshow(image)
+plt.show()
+Size of first sample image is (224, 224, 3).
+Weather condition label is snow
+
